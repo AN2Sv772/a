@@ -30,19 +30,30 @@ jobs:
               sys.exit(1)
           EOF
 
-      - name: Verify emails via SMTP
-        run: python3 smtp_verify.py emails.txt --out smtp_verified.csv --workers 250
-
-      - name: Push results to results branch
+      - name: Verify emails (checkpointed)
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git checkout -B results main 2>/dev/null || git checkout -B results
-          git add -f smtp_verified.csv
-          git commit -m "smtp verification results $(date -u +%FT%TZ)" -q || true
-          git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git results
+          python3 smtp_verify.py emails.txt --out smtp_verified.csv --workers 400 &
+          PID=$!
+          while kill -0 $PID 2>/dev/null; do
+            sleep 240
+            git add -f smtp_verified.csv errors.log 2>/dev/null || true
+            git commit -q -m "checkpoint $(date -u +%H:%M)" 2>/dev/null || true
+            git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git HEAD:results 2>/dev/null || true
+          done
+          wait $PID || true
+          echo "verifier exited"
+
+      - name: Final push results
+        if: always()
+        run: |
+          git add -f smtp_verified.csv errors.log 2>/dev/null || true
+          git commit -q -m "final $(date -u +%FT%TZ)" 2>/dev/null || true
+          git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git HEAD:results 2>/dev/null || true
 
       - name: Summarize
+        if: always()
         run: |
           python3 - <<'EOF'
           from collections import Counter
@@ -50,8 +61,9 @@ jobs:
           try:
               for line in open('smtp_verified.csv'):
                   if line.startswith('email,'): continue
-                  c[line.strip().split(',')[1]] += 1
+                  p = line.strip().split(',')
+                  if len(p) >= 2: c[p[1]] += 1
           except FileNotFoundError:
               pass
-          print('FINAL', dict(c))
+          print('FINAL', dict(c), 'total', sum(c.values()))
           EOF

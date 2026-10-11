@@ -17,24 +17,38 @@ EHLO = "probe.local"
 FROM = "verify@probe.local"
 MAX_CONN = 4
 MIN_SPACING = 0.6
+BIG_MAX_CONN = 120
+BIG_SPACING = 0.0
 CONN_TIMEOUT = 6.0
+
+BIG_HINTS = ("google", "gmail", "yahoo", "outlook", "hotmail", "live.",
+             "aol.", "icloud", "me.com", "msn", "comcast", "att.", "verizon",
+             "sbcglobal", "bellsouth", "cox.", "charter", "earthlink", "juno")
+
+
+def _is_big(name):
+    n = name.lower()
+    return any(h in n for h in BIG_HINTS)
+
 
 _host_lock = threading.Lock()
 _host_inflight = {}
 _host_last = {}
 
 
-def _host_gate(host):
+def _host_gate(host, big=False):
+    maxconn = BIG_MAX_CONN if big else MAX_CONN
+    spacing = BIG_SPACING if big else MIN_SPACING
     while True:
         with _host_lock:
             now = time.time()
             inflight = _host_inflight.get(host, 0)
             last = _host_last.get(host, 0.0)
-            if inflight < MAX_CONN and now - last >= MIN_SPACING:
+            if inflight < maxconn and now - last >= spacing:
                 _host_inflight[host] = inflight + 1
                 _host_last[host] = now
                 return
-        time.sleep(0.05 + random.random() * 0.1)
+        time.sleep(0.02 + random.random() * 0.03)
 
 
 def _read_line(f):
@@ -124,10 +138,15 @@ def check_email(email, mx_cache):
     domain = email.rpartition("@")[2].lower()
     if domain not in mx_cache:
         mx_cache[domain] = V.get_mx_udp(domain)
-    hosts = list(mx_cache[domain]) or [domain]
+    hosts = sorted(set(mx_cache[domain])) or [domain]
+    big = _is_big(domain)
+    if big and len(hosts) > 1:
+        start = hash(email) % len(hosts)
+        hosts = hosts[start:] + hosts[:start]
     verdict = ("unknown", 0)
     for host in hosts:
-        _host_gate(host)
+        big_host = big or _is_big(host)
+        _host_gate(host, big_host)
         try:
             verdict = _try_host(host, email)
         finally:
