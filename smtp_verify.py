@@ -41,7 +41,7 @@ def _read_line(f):
     data = b""
     try:
         while not data.endswith(b"\r\n"):
-            c = f.recv(1)
+            c = f.read(1)
             if not c:
                 break
             data += c
@@ -53,17 +53,18 @@ def _read_line(f):
         return ""
 
 
-def _read_response(f):
+def _read_response(f, cap=50):
     line = _read_line(f)
     data = line
+    lines = 1
     if len(line) >= 4 and line[3] == "-":
         code = line[:3]
-        while True:
+        while lines < cap:
             nxt = _read_line(f)
-            if not nxt or (nxt[:3] == code and (len(nxt) < 4 or nxt[3] != "-")):
-                data += "\n" + nxt
-                break
             data += "\n" + nxt
+            lines += 1
+            if not nxt or (nxt[:3] == code and (len(nxt) < 4 or nxt[3] != "-")):
+                break
     return data
 
 
@@ -114,6 +115,8 @@ def _try_host(host, email):
                 verdict = ("unknown", rcpt)
     except OSError:
         verdict = ("unknown", "conn")
+    except Exception:
+        verdict = ("unknown", "err")
     return verdict
 
 
@@ -159,13 +162,20 @@ def main():
         counts[k] = counts.get(k, 0) + 1
 
     lock = threading.Lock()
+    errlog = open("errors.log", "a", encoding="utf-8")
     outfile = open(args.out, "a", newline="", encoding="utf-8")
     writer = csv.writer(outfile)
     if os.path.getsize(args.out) == 0:
         writer.writerow(["email", "status", "code"])
 
     def work(e):
-        s, c = check_email(e, mx_cache)
+        try:
+            s, c = check_email(e, mx_cache)
+        except Exception as ex:
+            s, c = "unknown", "exc:" + type(ex).__name__
+            with lock:
+                errlog.write("%s\t%s\n" % (e, ex))
+                errlog.flush()
         with lock:
             counts[s] = counts.get(s, 0) + 1
             writer.writerow([e, s, c])
