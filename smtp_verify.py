@@ -82,8 +82,11 @@ def _read_response(f, cap=50):
     return data
 
 
-def _try_host(host, email):
+def _try_host(host, email, ehlo=EHLO, sender="own"):
     verdict = ("unknown", 0)
+    rcpt_from = FROM
+    if sender == "domain":
+        rcpt_from = "postmaster@" + email.rpartition("@")[2].lower()
     try:
         with socket.create_connection((host, 25), timeout=CONN_TIMEOUT) as sock:
             sock.settimeout(6.0)
@@ -92,16 +95,16 @@ def _try_host(host, email):
             code = int(banner[:3]) if banner[:3].isdigit() else 0
             if code != 220:
                 return ("unknown", code)
-            sock.sendall(("EHLO %s\r\n" % EHLO).encode("latin-1"))
+            sock.sendall(("EHLO %s\r\n" % ehlo).encode("latin-1"))
             r = _read_response(f)
             rc = int(r[:3]) if r[:3].isdigit() else 0
             if rc >= 400:
-                sock.sendall(("HELO %s\r\n" % EHLO).encode("latin-1"))
+                sock.sendall(("HELO %s\r\n" % ehlo).encode("latin-1"))
                 r = _read_response(f)
                 rc = int(r[:3]) if r[:3].isdigit() else 0
             if rc >= 400:
                 return ("unknown", rc)
-            sock.sendall(("MAIL FROM:<%s>\r\n" % FROM).encode("latin-1"))
+            sock.sendall(("MAIL FROM:<%s>\r\n" % rcpt_from).encode("latin-1"))
             r = _read_response(f)
             mf = int(r[:3]) if r[:3].isdigit() else 0
             if mf >= 400:
@@ -134,7 +137,7 @@ def _try_host(host, email):
     return verdict
 
 
-def check_email(email, mx_cache):
+def check_email(email, mx_cache, ehlo=EHLO, sender="own"):
     domain = email.rpartition("@")[2].lower()
     if domain not in mx_cache:
         mx_cache[domain] = V.get_mx_udp(domain)
@@ -148,7 +151,7 @@ def check_email(email, mx_cache):
         big_host = big or _is_big(host)
         _host_gate(host, big_host)
         try:
-            verdict = _try_host(host, email)
+            verdict = _try_host(host, email, ehlo, sender)
         finally:
             with _host_lock:
                 _host_inflight[host] = max(0, _host_inflight.get(host, 0) - 1)
@@ -163,6 +166,8 @@ def main():
     ap.add_argument("--out", default="smtp_verified_cache.csv")
     ap.add_argument("--workers", type=int, default=120)
     ap.add_argument("--recheck-invalid", action="store_true")
+    ap.add_argument("--ehlo", default=EHLO)
+    ap.add_argument("--sender", choices=["own", "domain"], default="own")
     args = ap.parse_args()
 
     done = {}
@@ -189,7 +194,7 @@ def main():
 
     def work(e):
         try:
-            s, c = check_email(e, mx_cache)
+            s, c = check_email(e, mx_cache, args.ehlo, args.sender)
         except Exception as ex:
             s, c = "unknown", "exc:" + type(ex).__name__
             with lock:

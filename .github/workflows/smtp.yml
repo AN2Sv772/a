@@ -33,10 +33,11 @@ jobs:
               sys.exit(1)
           EOF
 
-      - name: Verify emails (checkpointed)
+      - name: Resume main verification (skip if done)
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
+          git fetch origin results 2>/dev/null && git show origin/results:smtp_verified.csv > smtp_verified.csv 2>/dev/null || rm -f smtp_verified.csv
           python3 smtp_verify.py emails.txt --out smtp_verified.csv --workers 400 &
           PID=$!
           while kill -0 $PID 2>/dev/null; do
@@ -46,12 +47,15 @@ jobs:
             git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git HEAD:results 2>/dev/null || true
           done
           wait $PID || true
-          echo "verifier exited"
 
-      - name: Final push results
+      - name: Recheck unknown emails (FQDN + own-domain sender)
+        run: |
+          python3 smtp_verify.py unknown_emails.txt --out smtp_recheck.csv --ehlo mail.example.com --sender domain --workers 400
+
+      - name: Push results
         if: always()
         run: |
-          git add -f smtp_verified.csv errors.log 2>/dev/null || true
+          git add -f smtp_verified.csv smtp_recheck.csv errors.log 2>/dev/null || true
           git commit -q -m "final $(date -u +%FT%TZ)" 2>/dev/null || true
           git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git HEAD:results 2>/dev/null || true
 
@@ -60,13 +64,14 @@ jobs:
         run: |
           python3 - <<'EOF'
           from collections import Counter
-          c = Counter()
-          try:
-              for line in open('smtp_verified.csv'):
-                  if line.startswith('email,'): continue
-                  p = line.strip().split(',')
-                  if len(p) >= 2: c[p[1]] += 1
-          except FileNotFoundError:
-              pass
-          print('FINAL', dict(c), 'total', sum(c.values()))
+          for fn in ('smtp_verified.csv', 'smtp_recheck.csv'):
+              c = Counter()
+              try:
+                  for line in open(fn):
+                      if line.startswith('email,'): continue
+                      p = line.strip().split(',')
+                      if len(p) >= 2: c[p[1]] += 1
+              except FileNotFoundError:
+                  continue
+              print(fn, dict(c), 'total', sum(c.values()))
           EOF
