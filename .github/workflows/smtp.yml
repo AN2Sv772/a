@@ -1,0 +1,57 @@
+name: smtp-verify
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smtp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoke test port 25
+        run: |
+          python3 - <<'EOF'
+          import socket, sys
+          hosts = ['alt1.gmail-smtp-in.l.google.com', 'mx1.hotmail.com',
+                   'mta5.am0.yahoodns.net', 'aspmx.l.google.com']
+          ok = 0
+          for h in hosts:
+              try:
+                  s = socket.create_connection((h, 25), timeout=8)
+                  s.close(); ok += 1
+                  print(h, 'REACHABLE')
+              except Exception as e:
+                  print(h, 'FAIL', repr(e))
+          if ok == 0:
+              print('NO SMTP EGRESS, aborting')
+              sys.exit(1)
+          EOF
+
+      - name: Verify emails via SMTP
+        run: python3 smtp_verify.py emails.txt --out smtp_verified.csv --workers 250
+
+      - name: Push results to results branch
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git checkout -B results main 2>/dev/null || git checkout -B results
+          git add -f smtp_verified.csv
+          git commit -m "smtp verification results $(date -u +%FT%TZ)" -q || true
+          git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git results
+
+      - name: Summarize
+        run: |
+          python3 - <<'EOF'
+          from collections import Counter
+          c = Counter()
+          try:
+              for line in open('smtp_verified.csv'):
+                  if line.startswith('email,'): continue
+                  c[line.strip().split(',')[1]] += 1
+          except FileNotFoundError:
+              pass
+          print('FINAL', dict(c))
+          EOF
