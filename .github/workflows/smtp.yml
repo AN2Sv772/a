@@ -33,30 +33,26 @@ jobs:
               sys.exit(1)
           EOF
 
-      - name: Resume main verification (skip if done)
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git fetch origin results 2>/dev/null && git show origin/results:smtp_verified.csv > smtp_verified.csv 2>/dev/null || rm -f smtp_verified.csv
-          python3 smtp_verify.py emails.txt --out smtp_verified.csv --workers 400 &
-          PID=$!
-          while kill -0 $PID 2>/dev/null; do
-            sleep 240
-            git add -f smtp_verified.csv errors.log 2>/dev/null || true
-            git commit -q -m "checkpoint $(date -u +%H:%M)" 2>/dev/null || true
-            git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git HEAD:results 2>/dev/null || true
-          done
-          wait $PID || true
+      - name: Verify 201-250 band (standard handshake)
+        run: python3 smtp_verify.py emails_201_250.txt --out smtp_250.csv --workers 200
 
-      - name: Recheck unknown emails (FQDN + own-domain sender)
+      - name: Recheck 201-250 unknowns (FQDN + own-domain sender)
         run: |
-          python3 smtp_verify.py unknown_emails.txt --out smtp_recheck.csv --ehlo mail.example.com --sender domain --workers 400
+          python3 - <<'EOF'
+          rows = [l.split(',')[0] for l in open('smtp_250.csv')
+                  if not l.startswith('email,') and ',unknown' in l]
+          open('u250.txt', 'w').write('\n'.join(rows) + '\n')
+          print('unknowns to recheck:', len(rows))
+          EOF
+          python3 smtp_verify.py u250.txt --out smtp_250_recheck.csv --ehlo mail.example.com --sender domain --workers 200
 
       - name: Push results
         if: always()
         run: |
-          git add -f smtp_verified.csv smtp_recheck.csv errors.log 2>/dev/null || true
-          git commit -q -m "final $(date -u +%FT%TZ)" 2>/dev/null || true
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add -f smtp_250.csv smtp_250_recheck.csv errors.log 2>/dev/null || true
+          git commit -q -m "201-250 band $(date -u +%FT%TZ)" 2>/dev/null || true
           git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/AN2Sv772/a.git HEAD:results 2>/dev/null || true
 
       - name: Summarize
@@ -64,7 +60,7 @@ jobs:
         run: |
           python3 - <<'EOF'
           from collections import Counter
-          for fn in ('smtp_verified.csv', 'smtp_recheck.csv'):
+          for fn in ('smtp_250.csv', 'smtp_250_recheck.csv'):
               c = Counter()
               try:
                   for line in open(fn):
